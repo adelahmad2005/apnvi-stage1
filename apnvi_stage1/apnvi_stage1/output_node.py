@@ -1,5 +1,8 @@
 """
-output_node: the program that talks and beeps.
+output_node: the program that beeps (and can talk, but the voice is OFF by default).
+
+Decided 2026-09-25 (Adel): no voice to the user. Only beeps. The voice can be switched
+back on with the setting voice:=true, for example for testing.
 
 Listens to /hazard/level, /hazard/distance and /sensor/status (sent by hazard_node) and:
   - speaks with espeak-ng: "Obstacle ahead, 1.2 metres" at warning, "Stop" at stop,
@@ -98,7 +101,9 @@ class OutputNode(Node):
     def __init__(self):
         super().__init__('output_node')
         self.declare_parameter('show_bar', True)
+        self.declare_parameter('voice', False)          # no speech to the user (decided)
         self.show_bar = bool(self.get_parameter('show_bar').value)
+        self.voice = bool(self.get_parameter('voice').value)
 
         self.level, self.status, self.distance_m = 'clear', None, -1.0
         self.old_level, self.old_status = 'clear', None
@@ -114,7 +119,8 @@ class OutputNode(Node):
         if not self.espeak:
             self.get_logger().warn('espeak-ng not found: messages will only be printed')
         self.sounds = {}                        # sentence -> ready-made .wav file
-        self.prepare_common_sentences()
+        if self.voice:
+            self.prepare_common_sentences()
         if not self.player:
             self.get_logger().warn('no sound player (paplay/aplay) found: no beeps')
 
@@ -122,7 +128,7 @@ class OutputNode(Node):
         self.create_subscription(Float32, '/hazard/distance', self.on_distance, 10)
         self.create_subscription(String, '/sensor/status', self.on_status, 10)
         self.create_timer(0.02, self.on_timer)
-        self.get_logger().info('output_node started')
+        self.get_logger().info(f'output_node started, voice {"on" if self.voice else "off"}')
 
     def on_level(self, msg):
         self.level = msg.data
@@ -171,6 +177,8 @@ class OutputNode(Node):
 
         A kind of message spoken less than 4 s ago is skipped.
         """
+        if not self.voice:
+            return                              # voice is off: beeps only
         now = time.monotonic()
         texts = []
         for kind, text in messages:

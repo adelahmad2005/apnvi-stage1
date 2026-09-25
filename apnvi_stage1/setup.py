@@ -34,6 +34,7 @@ setup(
             'hazard_node = apnvi_stage1.hazard_node:main',
             'output_node = apnvi_stage1.output_node:main',
             'esp32_reader = apnvi_stage1.esp32_reader:main',
+            'live_view = apnvi_stage1.live_view:main',
         ],
     },
 )
