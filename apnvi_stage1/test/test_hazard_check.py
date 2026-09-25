@@ -1,7 +1,7 @@
 """Tests for hazard_check.py using fake depth pictures made in Python (no camera, no ROS)."""
 
 from apnvi_stage1.hazard_check import (
-    check_depth, level_for_distance, level_with_dead_zone, walking_lane)
+    check_depth, level_for_distance, level_with_dead_zone, nearest_distance, walking_lane)
 import numpy as np
 import pytest
 
@@ -131,3 +131,17 @@ def test_dead_zone_never_delays_danger():
 
 def test_dead_zone_with_no_previous_level():
     assert level_with_dead_zone(2.05, None) == 'clear'
+
+
+# ---- Picking the nearer sensor (used by hazard_node) ----
+
+def test_nearer_sensor_wins():
+    assert nearest_distance(2.0, 0.8) == 0.8
+    assert nearest_distance(0.6, 1.9) == 0.6
+
+
+def test_missing_or_minus_one_is_ignored():
+    assert nearest_distance(None, 1.2) == 1.2          # camera blocked
+    assert nearest_distance(1.5, -1.0) == 1.5          # ultrasonic: nothing in range
+    assert nearest_distance(None, None) == -1.0        # nothing from either
+    assert nearest_distance(None, -1.0) == -1.0

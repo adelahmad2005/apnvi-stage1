@@ -82,3 +82,14 @@ def check_depth(depth_mm):
     nearest_mm = np.percentile(valid, NEAREST_PERCENTILE)   # 5% of the lane is closer than this
     distance_m = round(float(nearest_mm) / 1000.0, 3)       # millimetres -> metres
     return distance_m, False, level_for_distance(distance_m)
+
+
+def nearest_distance(camera_m, ultrasonic_m):
+    """
+    Pick the nearer of the two sensors' distances (metres).
+
+    None or a negative number means "no reading" from that sensor and is ignored.
+    Returns -1.0 when neither sensor has a reading ("nothing in range").
+    """
+    readings = [d for d in (camera_m, ultrasonic_m) if d is not None and d >= 0]
+    return min(readings) if readings else -1.0
