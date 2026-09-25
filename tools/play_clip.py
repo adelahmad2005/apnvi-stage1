@@ -96,6 +96,8 @@ def main():
                          and args.blank_from <= clip_s <= args.blank_to)
                 if blank:
                     msg.data = array.array('B', bytes(len(msg.data)))  # all 0 = "no reading"
+                if not rclpy.ok():                      # we were asked to stop
+                    return
                 msg.header.stamp = node.get_clock().now().to_msg()
                 pub.publish(msg)
                 if number % 30 == 0 or number == len(frames):
@@ -103,7 +105,7 @@ def main():
                     print(f'  {clip_s:5.1f} s  picture {number}/{len(frames)}{note}')
             if not args.loop:
                 break
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, Exception):          # stopped mid-send: not an error
         pass
     finally:
         node.destroy_node()
