@@ -19,11 +19,23 @@ from rcl_interfaces.msg import ParameterDescriptor
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Float32, String
 
 DEPTH_ENCODINGS = ('16UC1', 'mono16')   # one 16-bit whole number per pixel, in mm
+
+
+# Only ever the newest picture: if the Jetson falls behind, old pictures are dropped
+# instead of queueing up (a queue would make every warning late).
+NEWEST_PICTURE = QoSProfile(depth=1, history=qos_profile_sensor_data.history,
+                            reliability=qos_profile_sensor_data.reliability)
+
+
+def picture_time(msg):
+    """Return when the picture was taken, in seconds (the time now if it has no time)."""
+    stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+    return stamp if stamp > 0 else time.monotonic()
 
 
 def image_to_depth_mm(msg):
@@ -74,7 +86,7 @@ class HazardNode(Node):
         self.start_time = time.monotonic()
 
         # "Newest is fine" receiving mode: works whether the sender is reliable or best-effort.
-        self.create_subscription(Image, depth_topic, self.on_depth, qos_profile_sensor_data)
+        self.create_subscription(Image, depth_topic, self.on_depth, NEWEST_PICTURE)
         self.create_subscription(
             CameraInfo, info_topic, self.on_camera_info, qos_profile_sensor_data)
         self.create_subscription(
@@ -108,7 +120,7 @@ class HazardNode(Node):
         intrinsics = self.intrinsics if same_size else None     # None = built-in guess
         distance_m, blocked, _ = check_depth(depth_mm, intrinsics, self.camera_height_m)
         self.approach_m, self.approach_side = (None, None) if blocked else \
-            self.approach.update(depth_mm, time.monotonic(), intrinsics, self.camera_height_m)
+            self.approach.update(depth_mm, picture_time(msg), intrinsics, self.camera_height_m)
         if self.approach_m is not None:           # something closing in from the side counts
             distance_m = nearest_distance(distance_m, self.approach_m)
         self.camera_m = distance_m

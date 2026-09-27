@@ -1,8 +1,11 @@
 """Tests for hazard_check.py using fake depth pictures made in Python (no camera, no ROS)."""
 
+import math
+
 from apnvi_stage1.hazard_check import (
-    ApproachWatcher, CAMERA_HEIGHT_M, check_depth, DEFAULT_INTRINSICS, level_for_distance,
-    level_with_dead_zone, nearest_distance, path_mask, side_gaps, walking_lane)
+    ApproachWatcher, CAMERA_HEIGHT_M, camera_motion, check_depth, DEFAULT_INTRINSICS,
+    level_for_distance, level_with_dead_zone, nearest_distance, path_mask, side_gaps,
+    top_down_scan, walking_lane)
 import numpy as np
 import pytest
 
@@ -264,3 +267,90 @@ def test_sudden_jump_is_not_motion():
 def test_far_away_object_is_ignored():
     frames = [side_object_at(1.2 - i / 30, ahead_m=3.5) for i in range(20)]
     assert all(a == (None, None) for a in run_watcher(frames))
+
+
+# ---- The camera moves too: "it moves" versus "we move" ----
+# A tiny top-down ray caster: a level camera 1 m up, walking and turning among upright
+# boxes. Each box is (left, right, near, far, low, high) in room metres.
+
+ROOM = [(-1.2, -1.0, 0.2, 6.0, 0.0, 2.5),      # wall 1 m to the left
+        (1.3, 1.5, 0.2, 6.0, 0.0, 2.5),        # wall 1.3 m to the right
+        (-0.6, 0.2, 4.0, 4.4, 0.0, 1.5),       # cabinet ahead
+        (0.6, 1.0, 1.5, 1.9, 0.0, 0.9)]        # table front-right
+
+
+def person(x, z):
+    """Return a 40 x 30 cm box, 1.8 m tall, centred at (x, z)."""
+    return (x - 0.2, x + 0.2, z - 0.15, z + 0.15, 0.0, 1.8)
+
+
+def room_picture(boxes, cam_x=0.0, cam_z=0.0, yaw_deg=0.0):
+    """Draw what the camera sees at (cam_x, cam_z), turned yaw_deg to the right."""
+    yaw = math.radians(yaw_deg)
+    ahead_dir = np.array([math.sin(yaw), math.cos(yaw)])
+    right_dir = np.array([math.cos(yaw), -math.sin(yaw)])
+    rays = ((np.arange(848) - CX) / FX)[:, None] * right_dir + ahead_dir
+    down = ((np.arange(480) - CY) / FY)[:, None]
+    depth = np.full((480, 848), np.inf)
+    for x0, x1, z0, z1, low, high in boxes:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            tx = np.sort([(x0 - cam_x) / rays[:, 0], (x1 - cam_x) / rays[:, 0]], axis=0)
+            tz = np.sort([(z0 - cam_z) / rays[:, 1], (z1 - cam_z) / rays[:, 1]], axis=0)
+        enter, leave = np.maximum(tx[0], tz[0]), np.minimum(tx[1], tz[1])
+        dist = np.where((leave >= enter) & (enter > 0.05), enter, np.inf)[None, :]
+        height = CAMERA_HEIGHT_M - down * dist
+        hit = (height >= low) & (height <= high) & (dist < depth)
+        depth = np.where(hit, dist, depth)
+    return np.where(np.isfinite(depth), depth * 1000, 8000).round().astype(np.uint16)
+
+
+def warnings_while(camera, extra=lambda t: [], seconds=1.5, fps=30, boxes=ROOM):
+    """Move the camera along camera(t) -> (x, z, yaw); return every warning given."""
+    watcher, found = ApproachWatcher(), []
+    for i in range(int(seconds * fps)):
+        t = i / fps
+        answer = watcher.update(room_picture(boxes + extra(t), *camera(t)), t)
+        if answer[0] is not None:
+            found.append((round(t, 2), answer))
+    return found
+
+
+def test_camera_turn_is_measured():
+    before = top_down_scan(room_picture(ROOM, yaw_deg=0))
+    after = top_down_scan(room_picture(ROOM, 0.0, 0.05, yaw_deg=5))
+    rotation, shift = camera_motion(before, after)
+    assert math.degrees(math.atan2(rotation[1, 0], rotation[0, 0])) == \
+        pytest.approx(-5, abs=0.5)
+    assert shift == pytest.approx([0.0, 0.05], abs=0.02)
+
+
+@pytest.mark.parametrize('name, camera', [
+    ('turning left', lambda t: (0, 0, -45 * t)),
+    ('turning right', lambda t: (0, 0, 45 * t)),
+    ('walking', lambda t: (0, 0.8 * t, 0)),
+    ('walking at an angle', lambda t: (0.4 * t, 0.8 * t, 0)),
+    ('walking and sweeping the cane', lambda t: (0, 0.8 * t, 20 * math.sin(2 * math.pi * t))),
+])
+def test_still_room_never_warns_however_the_camera_moves(name, camera):
+    assert warnings_while(camera) == []
+
+
+def test_person_walking_alongside_never_warns():
+    alongside = warnings_while(lambda t: (0, 0.8 * t, 0),
+                               lambda t: [person(-0.9, 1.5 + 0.8 * t)], boxes=ROOM[1:])
+    assert alongside == []
+
+
+@pytest.mark.parametrize('name, camera', [
+    ('standing still', lambda t: (0, 0, 0)),
+    ('walking', lambda t: (0, 0.8 * t, 0)),
+    ('walking and sweeping the cane', lambda t: (0, 0.8 * t, 20 * math.sin(2 * math.pi * t))),
+])
+def test_person_coming_in_from_the_left_warns_early(name, camera):
+    # walks toward the path at 1 m/s, from 1.5 m left of it
+    found = warnings_while(camera, lambda t: [person(-1.5 + t, 2.4)], seconds=1.0,
+                           boxes=ROOM[1:])
+    assert found, 'no warning at all'
+    first_t, (_, side) = found[0]
+    assert side == 'left'
+    assert 1.5 - first_t - 0.2 - 0.35 > 0.3          # still 30 cm+ outside the path

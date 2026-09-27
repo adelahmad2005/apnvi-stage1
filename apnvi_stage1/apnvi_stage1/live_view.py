@@ -17,6 +17,7 @@ import threading
 import time
 
 from apnvi_stage1.hazard_check import ApproachWatcher, path_mask
+from apnvi_stage1.hazard_node import NEWEST_PICTURE, picture_time
 from apnvi_stage1.output_node import beep_gap
 import cv2
 import numpy as np
@@ -106,7 +107,7 @@ class LiveView(Node):
         self.said, self.said_time = None, 0.0
         self.jpeg = None
         self.lock = threading.Lock()
-        self.create_subscription(Image, depth_topic, self.on_depth, qos_profile_sensor_data)
+        self.create_subscription(Image, depth_topic, self.on_depth, NEWEST_PICTURE)
         self.create_subscription(
             CameraInfo, info_topic, self.on_camera_info, qos_profile_sensor_data)
         self.create_subscription(String, '/hazard/level', self.on_level, 10)
@@ -119,7 +120,7 @@ class LiveView(Node):
         grid = np.frombuffer(msg.data, dtype='<u2').reshape(msg.height, msg.step // 2)
         self.depth = grid[:, :msg.width]
         same_size = self.intrinsics_size == self.depth.shape
-        _, side = self.approach.update(self.depth, time.monotonic(),
+        _, side = self.approach.update(self.depth, picture_time(msg),
                                        self.intrinsics if same_size else None,
                                        self.camera_height_m)
         if side is not None:
