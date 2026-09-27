@@ -1,9 +1,11 @@
 """
 live_view: shows what the camera sees and what the system decides, in a web browser.
 
-The depth picture in colour (red = near, blue = far, black = no reading), the walking
-lane as a white box, and underneath: the level, the distance, the camera status and how
-fast it is beeping. Started by stage1.launch.py (view:=true, the default).
+The depth picture in colour (red = near, blue = far, black = no reading). Only the
+BRIGHT part counts: that is the real-size path in front of the user (70 cm wide, 10 cm
+to 2 m above the floor). Everything outside it is shown dim. Underneath: the level, the
+distance, the camera status and how fast it is beeping.
+Started by stage1.launch.py (view:=true, the default).
 
 Open it in any browser:
   on the same computer:            http://localhost:8080
@@ -14,15 +16,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import time
 
+from apnvi_stage1.hazard_check import path_mask
 from apnvi_stage1.output_node import beep_gap
 import cv2
 import numpy as np
-from rcl_interfaces.msg import Log
+from rcl_interfaces.msg import Log, ParameterDescriptor
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Float32, String
 
 FAR_MM = 4000                                           # colour scale: 0 to 4 m
@@ -33,8 +36,8 @@ PAGE = (b'<html><head><title>APNVI live view</title></head>'
         b'<img src="/stream" style="max-width:100%"></body></html>')
 
 
-def render(depth_mm, level, distance_m, status, said, said_age_s):
-    """Draw one frame: coloured depth picture with the lane box, and a text panel below."""
+def render(depth_mm, level, distance_m, status, said, said_age_s, in_path=None):
+    """Draw one frame: coloured depth picture (path bright, rest dim) and a text panel."""
     if depth_mm is None:
         picture = np.zeros((480, 848, 3), np.uint8)
         cv2.putText(picture, 'waiting for the camera...', (40, 240),
@@ -42,10 +45,11 @@ def render(depth_mm, level, distance_m, status, said, said_age_s):
     else:
         near_is_bright = 255 - np.clip(depth_mm.astype(np.int32), 0, FAR_MM) * 255 // FAR_MM
         picture = cv2.applyColorMap(near_is_bright.astype(np.uint8), cv2.COLORMAP_JET)
+        if in_path is not None:
+            picture[~in_path] = picture[~in_path] // 4  # outside the path -> dim
         picture[depth_mm == 0] = 0                      # no reading -> black
-        height, width = depth_mm.shape
-        cv2.rectangle(picture, (width // 3, height // 4), (2 * width // 3, 3 * height // 4),
-                      (255, 255, 255), 2)
+        cv2.putText(picture, 'bright = in the path (counts)   dim = ignored', (10, 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
     panel = np.full((150, picture.shape[1], 3), 30, np.uint8)
     colour = LEVEL_COLOURS.get(level, (120, 120, 120))
     cv2.rectangle(panel, (0, 0), (260, 150), colour, -1)
@@ -79,14 +83,22 @@ class LiveView(Node):
         super().__init__('live_view')
         self.declare_parameter('depth_topic', '/camera/camera/depth/image_rect_raw')
         self.declare_parameter('port', 8080)
+        self.declare_parameter('camera_height_m', 1.0,
+                               ParameterDescriptor(dynamic_typing=True))
+        self.declare_parameter('camera_info_topic', '/camera/camera/depth/camera_info')
         depth_topic = self.get_parameter('depth_topic').value
         self.port = int(self.get_parameter('port').value)
+        self.camera_height_m = float(self.get_parameter('camera_height_m').value)
+        info_topic = self.get_parameter('camera_info_topic').value
+        self.intrinsics, self.intrinsics_size = None, None
         self.depth = None
         self.level, self.distance, self.status = None, None, None
         self.said, self.said_time = None, 0.0
         self.jpeg = None
         self.lock = threading.Lock()
         self.create_subscription(Image, depth_topic, self.on_depth, qos_profile_sensor_data)
+        self.create_subscription(
+            CameraInfo, info_topic, self.on_camera_info, qos_profile_sensor_data)
         self.create_subscription(String, '/hazard/level', self.on_level, 10)
         self.create_subscription(Float32, '/hazard/distance', self.on_distance, 10)
         self.create_subscription(String, '/sensor/status', self.on_status, 10)
@@ -96,6 +108,10 @@ class LiveView(Node):
     def on_depth(self, msg):
         grid = np.frombuffer(msg.data, dtype='<u2').reshape(msg.height, msg.step // 2)
         self.depth = grid[:, :msg.width]
+
+    def on_camera_info(self, msg):
+        self.intrinsics = (msg.k[0], msg.k[4], msg.k[2], msg.k[5])
+        self.intrinsics_size = (msg.height, msg.width)
 
     def on_level(self, msg):
         self.level = msg.data
@@ -111,8 +127,13 @@ class LiveView(Node):
             self.said, self.said_time = msg.msg[5:], time.monotonic()
 
     def draw(self):
+        in_path = None
+        if self.depth is not None:
+            same_size = self.intrinsics_size == self.depth.shape
+            in_path = path_mask(self.depth, self.intrinsics if same_size else None,
+                                self.camera_height_m)
         frame = render(self.depth, self.level, self.distance, self.status,
-                       self.said, time.monotonic() - self.said_time)
+                       self.said, time.monotonic() - self.said_time, in_path)
         ok, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if ok:
             with self.lock:

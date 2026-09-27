@@ -23,7 +23,8 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.serialization import deserialize_message
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import String
 
 try:                                    # Ubuntu 22.04 package: python3-zstd
     import zstd
@@ -38,6 +39,8 @@ except ImportError:                     # newer Ubuntu package: python3-zstandar
 
 CLIP_DEPTH_CHANNEL = '/device_0/sensor_0/Depth_0/image/data'   # RealSense Viewer's name
 LIVE_DEPTH_CHANNEL = '/camera/camera/depth/image_rect_raw'     # RealSense ROS driver's name
+CLIP_INFO_CHANNEL = '/device_0/sensor_0/Depth_0/camera_info'  # lens numbers, as text
+LIVE_INFO_CHANNEL = '/camera/camera/depth/camera_info'
 ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'                                # start of a compressed blob
 
 
@@ -51,6 +54,24 @@ def open_clip(path):
     if not frames:
         raise SystemExit(f'No depth pictures found in {path}')
     return con, frames
+
+
+def read_lens_numbers(con):
+    """Read the camera's lens numbers from the clip and turn them into a CameraInfo message."""
+    row = con.execute('SELECT m.data FROM messages m JOIN topics t ON t.id = m.topic_id '
+                      'WHERE t.name = ? LIMIT 1', (CLIP_INFO_CHANNEL,)).fetchone()
+    if row is None:
+        return None
+    blob = unpack(row[0]) if row[0][:4] == ZSTD_MAGIC else row[0]
+    text = deserialize_message(blob, String).data   # "width=848;height=480;fx=...;..."
+    values = dict(part.split('=') for part in text.split(';') if '=' in part)
+    info = CameraInfo()
+    info.width, info.height = int(values['width']), int(values['height'])
+    fx, fy = float(values['fx']), float(values['fy'])
+    cx, cy = float(values['ppx']), float(values['ppy'])
+    info.k = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
+    info.header.frame_id = 'camera_depth_optical_frame'
+    return info
 
 
 def read_picture(con, message_id):
@@ -81,6 +102,8 @@ def main():
     rclpy.init()
     node = Node('play_clip')
     pub = node.create_publisher(Image, args.topic, 5)
+    info_pub = node.create_publisher(CameraInfo, LIVE_INFO_CHANNEL, 5)
+    info = read_lens_numbers(con)                   # sent with every picture, like the driver
     time.sleep(1.0)                                 # give listeners a moment to connect
 
     try:
@@ -100,6 +123,9 @@ def main():
                     return
                 msg.header.stamp = node.get_clock().now().to_msg()
                 pub.publish(msg)
+                if info is not None:
+                    info.header.stamp = msg.header.stamp
+                    info_pub.publish(info)
                 if number % 30 == 0 or number == len(frames):
                     note = '  (blanked)' if blank else ''
                     print(f'  {clip_s:5.1f} s  picture {number}/{len(frames)}{note}')

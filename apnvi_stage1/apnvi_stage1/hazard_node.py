@@ -14,11 +14,12 @@ import time
 
 from apnvi_stage1.hazard_check import check_depth, level_with_dead_zone, nearest_distance
 import numpy as np
+from rcl_interfaces.msg import ParameterDescriptor
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Float32, String
 
 DEPTH_ENCODINGS = ('16UC1', 'mono16')   # one 16-bit whole number per pixel, in mm
@@ -46,10 +47,17 @@ class HazardNode(Node):
         self.declare_parameter('publish_rate_hz', 10.0)
         self.declare_parameter('stale_after_s', 0.5)      # older readings count as missing
         self.declare_parameter('startup_wait_s', 5.0)     # time for the camera to start
+        self.declare_parameter('camera_height_m', 1.0,
+                               ParameterDescriptor(dynamic_typing=True))  # lens height, m
+        self.declare_parameter('camera_info_topic', '/camera/camera/depth/camera_info')
         depth_topic = self.get_parameter('depth_topic').value
         rate_hz = float(self.get_parameter('publish_rate_hz').value)
         self.stale_after_s = float(self.get_parameter('stale_after_s').value)
         self.startup_wait_s = float(self.get_parameter('startup_wait_s').value)
+        self.camera_height_m = float(self.get_parameter('camera_height_m').value)
+        info_topic = self.get_parameter('camera_info_topic').value
+        self.intrinsics = None          # the camera's lens numbers, once it sends them
+        self.intrinsics_size = None     # (height, width) they belong to
 
         # Latest reading from each sensor, and when it arrived (None = never).
         self.camera_m = None
@@ -65,6 +73,8 @@ class HazardNode(Node):
         # "Newest is fine" receiving mode: works whether the sender is reliable or best-effort.
         self.create_subscription(Image, depth_topic, self.on_depth, qos_profile_sensor_data)
         self.create_subscription(
+            CameraInfo, info_topic, self.on_camera_info, qos_profile_sensor_data)
+        self.create_subscription(
             Float32, '/ultrasonic/distance', self.on_ultrasonic, qos_profile_sensor_data)
 
         self.distance_pub = self.create_publisher(Float32, '/hazard/distance', 10)
@@ -74,7 +84,15 @@ class HazardNode(Node):
         self.create_timer(1.0 / rate_hz, self.on_timer)
         self.get_logger().info(
             f'hazard_node started: camera on "{depth_topic}", ultrasonic on '
-            f'"/ultrasonic/distance", sending {rate_hz:.0f} times per second')
+            f'"/ultrasonic/distance", sending {rate_hz:.0f} times per second, '
+            f'camera height {self.camera_height_m:.2f} m')
+
+    def on_camera_info(self, msg):
+        """Remember the camera's lens numbers (fx, fy, cx, cy), used to size the path."""
+        if self.intrinsics is None:
+            self.get_logger().info('using the camera\'s own lens numbers for the path')
+        self.intrinsics = (msg.k[0], msg.k[4], msg.k[2], msg.k[5])
+        self.intrinsics_size = (msg.height, msg.width)
 
     def on_depth(self, msg):
         """Run the check on each new camera picture and remember the result."""
@@ -83,7 +101,9 @@ class HazardNode(Node):
         except ValueError as error:
             self.get_logger().warn(str(error), throttle_duration_sec=5.0)
             return
-        distance_m, blocked, _ = check_depth(depth_mm)
+        same_size = self.intrinsics_size == depth_mm.shape
+        intrinsics = self.intrinsics if same_size else None     # None = built-in guess
+        distance_m, blocked, _ = check_depth(depth_mm, intrinsics, self.camera_height_m)
         self.camera_m = distance_m
         self.camera_blocked = blocked
         self.camera_time = time.monotonic()

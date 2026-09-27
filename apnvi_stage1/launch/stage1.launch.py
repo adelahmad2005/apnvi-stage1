@@ -12,6 +12,7 @@ Options:
   rviz:=true           also open rviz2 showing the depth picture
   view:=false          do not start the browser live view (on by default, port 8080)
   voice:=true          switch the voice on (off by default: beeps only)
+  camera_height:=0.95  the camera lens height above the floor in metres (default 1.0)
 Live view: open http://localhost:8080, or http://<Jetson IP>:8080 from a laptop on the same wifi
 """
 
@@ -32,6 +33,7 @@ def generate_launch_description():
     rviz = LaunchConfiguration('rviz')
     view = LaunchConfiguration('view')
     voice = LaunchConfiguration('voice')
+    camera_height = LaunchConfiguration('camera_height')
 
     return LaunchDescription([
         DeclareLaunchArgument('camera', default_value='true'),
@@ -42,6 +44,7 @@ def generate_launch_description():
         DeclareLaunchArgument('rviz', default_value='false'),
         DeclareLaunchArgument('view', default_value='true'),
         DeclareLaunchArgument('voice', default_value='false'),
+        DeclareLaunchArgument('camera_height', default_value='1.0'),
 
         # The RealSense camera driver (only on the device, where it is installed).
         IncludeLaunchDescription(
@@ -52,11 +55,12 @@ def generate_launch_description():
         Node(package='apnvi_stage1', executable='esp32_reader', output='screen',
              parameters=[{'port': port, 'test_mode': test_mode}]),
         Node(package='apnvi_stage1', executable='hazard_node', output='screen',
-             parameters=[{'depth_topic': depth_topic}]),
+             parameters=[{'depth_topic': depth_topic, 'camera_height_m': camera_height}]),
         Node(package='apnvi_stage1', executable='output_node', output='screen',
              parameters=[{'voice': voice}]),
         Node(package='apnvi_stage1', executable='live_view', output='screen',
-             parameters=[{'depth_topic': depth_topic}], condition=IfCondition(view)),
+             parameters=[{'depth_topic': depth_topic, 'camera_height_m': camera_height}],
+             condition=IfCondition(view)),
 
         Node(package='rviz2', executable='rviz2', output='log',
              arguments=['-d', PathJoinSubstitution(

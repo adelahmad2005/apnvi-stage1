@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # APNVI Stage 1 - start the demo. After jetson_setup.sh, just type:  apnvi
+# Camera not at 1 m? Type e.g.:  apnvi camera_height:=0.9
 # Stop it with Ctrl+C.
 
 WS="$HOME/apnvi_demo"
@@ -43,4 +44,4 @@ echo
 # Open the live video in this computer's browser after a few seconds.
 ( sleep 10; xdg-open http://localhost:8080 >/dev/null 2>&1 ) &
 
-ros2 launch apnvi_stage1 stage1.launch.py camera:=$CAMERA port:=$PORT
+ros2 launch apnvi_stage1 stage1.launch.py camera:=$CAMERA port:=$PORT "$@"   # e.g. apnvi camera_height:=0.9

@@ -1,7 +1,8 @@
 """Tests for hazard_check.py using fake depth pictures made in Python (no camera, no ROS)."""
 
 from apnvi_stage1.hazard_check import (
-    check_depth, level_for_distance, level_with_dead_zone, nearest_distance, walking_lane)
+    CAMERA_HEIGHT_M, check_depth, DEFAULT_INTRINSICS, level_for_distance,
+    level_with_dead_zone, nearest_distance, path_mask, walking_lane)
 import numpy as np
 import pytest
 
@@ -63,16 +64,11 @@ def test_all_zeros_is_blocked():
     assert check_depth(picture(0)) == (None, True, None)
 
 
-# ---- Only the walking lane counts ----
+# ---- Blocked check box / percentile ----
 
-def test_close_object_outside_lane_is_ignored():
+def test_tiny_speck_is_ignored():
     depth = picture(3000)
-    depth[:, :100] = 300                            # something at 0.3 m on the far left
-    assert check_depth(depth)[2] == 'clear'
-
-
-def test_small_object_is_missed_known_limit():
-    depth = cover_lane(picture(3000), 0.03, 400)    # 3% of the lane: under the 5th percentile
+    depth[230:234, 420:425] = 300                   # 20 noisy pixels: far under 5% of the path
     assert check_depth(depth)[2] == 'clear'
 
 
@@ -145,3 +141,65 @@ def test_missing_or_minus_one_is_ignored():
     assert nearest_distance(1.5, -1.0) == 1.5          # ultrasonic: nothing in range
     assert nearest_distance(None, None) == -1.0        # nothing from either
     assert nearest_distance(None, -1.0) == -1.0
+
+
+# ---- The real-size path (70 cm wide, 10 cm to 2 m above the floor, camera at 1 m) ----
+
+FX, FY, CX, CY = DEFAULT_INTRINSICS
+
+
+def put_object(depth, z_m, left_m, right_m, low_m, high_m):
+    """Paint a flat object at distance z_m, between left_m..right_m and low_m..high_m."""
+    height, width = depth.shape
+    u0 = max(0, int(CX + left_m * FX / z_m))
+    u1 = min(width, int(CX + right_m * FX / z_m))
+    v0 = max(0, int(CY + (CAMERA_HEIGHT_M - high_m) * FY / z_m))
+    v1 = min(height, int(CY + (CAMERA_HEIGHT_M - low_m) * FY / z_m))
+    depth[v0:v1, u0:u1] = int(z_m * 1000)
+    return depth
+
+
+def add_floor(depth):
+    """Make every pixel below the horizon show the floor, as a level camera at 1 m sees it."""
+    for v in range(int(CY) + 1, depth.shape[0]):
+        depth[v, :] = min(65000, int(1000 * CAMERA_HEIGHT_M * FY / (v - CY)))
+    return depth
+
+
+def test_close_object_to_the_side_is_found():
+    # 0.6 m away, 22 to 34 cm left of centre: outside the OLD box, inside the 70 cm path
+    depth = put_object(picture(4000), 0.6, -0.34, -0.22, 0.5, 1.2)
+    assert check_depth(depth) == (0.6, False, 'warning')
+
+
+def test_wall_far_to_the_side_is_ignored():
+    depth = put_object(picture(4000), 1.5, -1.3, -0.9, 0.2, 1.8)   # 0.9 m+ to the left
+    assert check_depth(depth)[2] == 'clear'
+
+
+def test_floor_is_ignored():
+    depth = add_floor(picture(4000))
+    assert check_depth(depth) == (4.0, False, 'clear')
+
+
+def test_low_obstacle_on_the_floor_is_found():
+    # A level camera at 1 m cannot see the floor closer than about 1.8 m (its view only
+    # reaches 29 degrees down), so a 25 cm box is tested at 1.9 m.
+    depth = put_object(add_floor(picture(4000)), 1.9, -0.2, 0.2, 0.0, 0.25)
+    assert check_depth(depth) == (1.9, False, 'notice')
+
+
+def test_something_above_head_height_is_ignored():
+    depth = put_object(picture(4000), 3.0, -0.3, 0.3, 2.1, 2.6)
+    assert check_depth(depth)[2] == 'clear'
+
+
+def test_nothing_in_the_path_is_clear():
+    depth = add_floor(np.zeros((480, 848), dtype=np.uint16))       # only floor, no wall
+    assert check_depth(depth) == (None, False, 'clear')
+
+
+def test_path_is_wider_close_up_than_far_away():
+    near = path_mask(picture(500))[240].sum()      # pixels across at 0.5 m
+    far = path_mask(picture(3000))[240].sum()      # pixels across at 3 m
+    assert near > 5 * far
