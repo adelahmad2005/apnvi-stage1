@@ -1,8 +1,8 @@
 """Tests for hazard_check.py using fake depth pictures made in Python (no camera, no ROS)."""
 
 from apnvi_stage1.hazard_check import (
-    CAMERA_HEIGHT_M, check_depth, DEFAULT_INTRINSICS, level_for_distance,
-    level_with_dead_zone, nearest_distance, path_mask, walking_lane)
+    ApproachWatcher, CAMERA_HEIGHT_M, check_depth, DEFAULT_INTRINSICS, level_for_distance,
+    level_with_dead_zone, nearest_distance, path_mask, side_gaps, walking_lane)
 import numpy as np
 import pytest
 
@@ -151,10 +151,9 @@ FX, FY, CX, CY = DEFAULT_INTRINSICS
 def put_object(depth, z_m, left_m, right_m, low_m, high_m):
     """Paint a flat object at distance z_m, between left_m..right_m and low_m..high_m."""
     height, width = depth.shape
-    u0 = max(0, int(CX + left_m * FX / z_m))
-    u1 = min(width, int(CX + right_m * FX / z_m))
-    v0 = max(0, int(CY + (CAMERA_HEIGHT_M - high_m) * FY / z_m))
-    v1 = min(height, int(CY + (CAMERA_HEIGHT_M - low_m) * FY / z_m))
+    u0, u1 = (int(np.clip(CX + m * FX / z_m, 0, width)) for m in (left_m, right_m))
+    v0, v1 = (int(np.clip(CY + (CAMERA_HEIGHT_M - m) * FY / z_m, 0, height))
+              for m in (high_m, low_m))
     depth[v0:v1, u0:u1] = int(z_m * 1000)
     return depth
 
@@ -203,3 +202,65 @@ def test_path_is_wider_close_up_than_far_away():
     near = path_mask(picture(500))[240].sum()      # pixels across at 0.5 m
     far = path_mask(picture(3000))[240].sum()      # pixels across at 3 m
     assert near > 5 * far
+
+
+# ---- Things coming in from the side ----
+
+def run_watcher(frames, fps=30):
+    """Feed pictures to a fresh ApproachWatcher; return every answer it gives."""
+    watcher = ApproachWatcher()
+    return [watcher.update(depth, i / fps) for i, depth in enumerate(frames)]
+
+
+def side_object_at(inner_edge_m, ahead_m=1.2, side=-1):
+    """Make a 30 cm wide object whose edge nearest the path is inner_edge_m from centre."""
+    near, far = inner_edge_m, inner_edge_m + 0.3
+    left, right = (-far, -near) if side < 0 else (near, far)
+    return put_object(picture(4000), ahead_m, left, right, 0.3, 1.6)
+
+
+def test_side_gap_is_measured():
+    gaps = side_gaps(side_object_at(0.85))           # 50 cm from the path's edge (at 0.35)
+    assert gaps['left'][0] == pytest.approx(0.50, abs=0.02)
+    assert gaps['left'][1] == pytest.approx(1.2, abs=0.01)
+    assert gaps['right'] is None
+
+
+def test_still_wall_next_to_the_path_never_warns():
+    answers = run_watcher([side_object_at(0.6)] * 30)
+    assert all(a == (None, None) for a in answers)
+
+
+def test_object_coming_in_from_the_left_warns_early():
+    # moves 1 m/s toward the path, starting 1.2 m left of centre
+    frames = [side_object_at(1.2 - i / 30) for i in range(20)]
+    answers = run_watcher(frames)
+    first = next(i for i, a in enumerate(answers) if a[0] is not None)
+    assert answers[first] == (1.2, 'left')
+    gap_when_warned = 1.2 - first / 30 - 0.35
+    assert gap_when_warned > 0.3                     # warned while still well outside the path
+
+
+def test_object_coming_in_from_the_right_warns():
+    frames = [side_object_at(1.2 - i / 30, side=1) for i in range(20)]
+    assert any(a == (1.2, 'right') for a in run_watcher(frames))
+
+
+def test_object_moving_away_never_warns():
+    frames = [side_object_at(0.5 + i / 30) for i in range(20)]
+    assert all(a == (None, None) for a in run_watcher(frames))
+
+
+def test_slow_object_does_not_warn_yet():
+    frames = [side_object_at(1.2 - 0.1 * i / 30) for i in range(30)]   # 0.1 m/s
+    assert all(a == (None, None) for a in run_watcher(frames))
+
+
+def test_sudden_jump_is_not_motion():
+    frames = [side_object_at(1.3)] * 10 + [side_object_at(0.5)] * 10  # a different object
+    assert all(a == (None, None) for a in run_watcher(frames))
+
+
+def test_far_away_object_is_ignored():
+    frames = [side_object_at(1.2 - i / 30, ahead_m=3.5) for i in range(20)]
+    assert all(a == (None, None) for a in run_watcher(frames))

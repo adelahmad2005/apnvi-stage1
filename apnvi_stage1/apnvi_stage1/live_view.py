@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import time
 
-from apnvi_stage1.hazard_check import path_mask
+from apnvi_stage1.hazard_check import ApproachWatcher, path_mask
 from apnvi_stage1.output_node import beep_gap
 import cv2
 import numpy as np
@@ -36,7 +36,8 @@ PAGE = (b'<html><head><title>APNVI live view</title></head>'
         b'<img src="/stream" style="max-width:100%"></body></html>')
 
 
-def render(depth_mm, level, distance_m, status, said, said_age_s, in_path=None):
+def render(depth_mm, level, distance_m, status, said, said_age_s, in_path=None,
+           approach_side=None):
     """Draw one frame: coloured depth picture (path bright, rest dim) and a text panel."""
     if depth_mm is None:
         picture = np.zeros((480, 848, 3), np.uint8)
@@ -48,8 +49,15 @@ def render(depth_mm, level, distance_m, status, said, said_age_s, in_path=None):
         if in_path is not None:
             picture[~in_path] = picture[~in_path] // 4  # outside the path -> dim
         picture[depth_mm == 0] = 0                      # no reading -> black
-        cv2.putText(picture, 'bright = in the path (counts)   dim = ignored', (10, 22),
+        cv2.putText(picture, 'bright = in the path (counts)   dim = ignored', (40, 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        if approach_side in ('left', 'right'):         # something closing in from a side
+            width = picture.shape[1]
+            x0 = 0 if approach_side == 'left' else width - 30
+            cv2.rectangle(picture, (x0, 0), (x0 + 30, picture.shape[0]), (0, 0, 255), -1)
+            text = f'COMING IN FROM THE {approach_side.upper()}'
+            cv2.putText(picture, text, (40 if approach_side == 'left' else width - 470, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3)
     panel = np.full((150, picture.shape[1], 3), 30, np.uint8)
     colour = LEVEL_COLOURS.get(level, (120, 120, 120))
     cv2.rectangle(panel, (0, 0), (260, 150), colour, -1)
@@ -91,6 +99,8 @@ class LiveView(Node):
         self.camera_height_m = float(self.get_parameter('camera_height_m').value)
         info_topic = self.get_parameter('camera_info_topic').value
         self.intrinsics, self.intrinsics_size = None, None
+        self.approach = ApproachWatcher()
+        self.approach_side, self.approach_time = None, 0.0
         self.depth = None
         self.level, self.distance, self.status = None, None, None
         self.said, self.said_time = None, 0.0
@@ -108,6 +118,12 @@ class LiveView(Node):
     def on_depth(self, msg):
         grid = np.frombuffer(msg.data, dtype='<u2').reshape(msg.height, msg.step // 2)
         self.depth = grid[:, :msg.width]
+        same_size = self.intrinsics_size == self.depth.shape
+        _, side = self.approach.update(self.depth, time.monotonic(),
+                                       self.intrinsics if same_size else None,
+                                       self.camera_height_m)
+        if side is not None:
+            self.approach_side, self.approach_time = side, time.monotonic()
 
     def on_camera_info(self, msg):
         self.intrinsics = (msg.k[0], msg.k[4], msg.k[2], msg.k[5])
@@ -133,7 +149,8 @@ class LiveView(Node):
             in_path = path_mask(self.depth, self.intrinsics if same_size else None,
                                 self.camera_height_m)
         frame = render(self.depth, self.level, self.distance, self.status,
-                       self.said, time.monotonic() - self.said_time, in_path)
+                       self.said, time.monotonic() - self.said_time, in_path,
+                       self.approach_side if time.monotonic() - self.approach_time < 1 else None)
         ok, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if ok:
             with self.lock:

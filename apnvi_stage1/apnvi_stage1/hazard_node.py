@@ -12,7 +12,8 @@ All the maths lives in hazard_check.py (plain Python, tested without ROS).
 
 import time
 
-from apnvi_stage1.hazard_check import check_depth, level_with_dead_zone, nearest_distance
+from apnvi_stage1.hazard_check import (
+    ApproachWatcher, check_depth, level_with_dead_zone, nearest_distance)
 import numpy as np
 from rcl_interfaces.msg import ParameterDescriptor
 import rclpy
@@ -46,7 +47,7 @@ class HazardNode(Node):
         self.declare_parameter('depth_topic', '/camera/camera/depth/image_rect_raw')
         self.declare_parameter('publish_rate_hz', 10.0)
         self.declare_parameter('stale_after_s', 0.5)      # older readings count as missing
-        self.declare_parameter('startup_wait_s', 5.0)     # time for the camera to start
+        self.declare_parameter('startup_wait_s', 10.0)    # time for the camera to start
         self.declare_parameter('camera_height_m', 1.0,
                                ParameterDescriptor(dynamic_typing=True))  # lens height, m
         self.declare_parameter('camera_info_topic', '/camera/camera/depth/camera_info')
@@ -62,6 +63,8 @@ class HazardNode(Node):
         # Latest reading from each sensor, and when it arrived (None = never).
         self.camera_m = None
         self.camera_blocked = True
+        self.approach = ApproachWatcher()    # things coming in from the side
+        self.approach_m, self.approach_side = None, None
         self.camera_time = None
         self.ultrasonic_m = None
         self.ultrasonic_time = None
@@ -104,6 +107,10 @@ class HazardNode(Node):
         same_size = self.intrinsics_size == depth_mm.shape
         intrinsics = self.intrinsics if same_size else None     # None = built-in guess
         distance_m, blocked, _ = check_depth(depth_mm, intrinsics, self.camera_height_m)
+        self.approach_m, self.approach_side = (None, None) if blocked else \
+            self.approach.update(depth_mm, time.monotonic(), intrinsics, self.camera_height_m)
+        if self.approach_m is not None:           # something closing in from the side counts
+            distance_m = nearest_distance(distance_m, self.approach_m)
         self.camera_m = distance_m
         self.camera_blocked = blocked
         self.camera_time = time.monotonic()
@@ -140,7 +147,8 @@ class HazardNode(Node):
         self.status_pub.publish(String(data=status))
 
         if (self.level, status) != self.last_report:
-            self.get_logger().info(f'{self.level}, {status}, distance {distance_m:.2f} m')
+            coming = f', coming in from the {self.approach_side}' if self.approach_m else ''
+            self.get_logger().info(f'{self.level}, {status}, distance {distance_m:.2f} m{coming}')
             self.last_report = (self.level, status)
 
 
