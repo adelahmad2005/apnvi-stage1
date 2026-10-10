@@ -1,134 +1,398 @@
-# Monday checklist: getting Stage 2 running
+<!-- Same content as APNVI_Stage2_Setup_Guide.pdf in the planning repo. DRAFT: not yet tested on the real hardware. -->
 
-Two parts. Part A sets up the campus PC (Windows 10, RTX 2070), about an hour.
-Part B starts Stage 2 on the Jetson. Do them in order. If a step fails, stop and note
-the exact error.
+# Stage 2 Setup Guide — step by step
 
-Words used below:
-- **Command Prompt**: Windows' text window. Start menu, type `cmd`, press Enter.
-- **Ollama**: the program that runs the AI model (Qwen) and answers over the network.
-- **Speech server**: our `speech_server.py`, which turns a recording into words.
+Follow the steps in order. Each step tells you what to **do**, gives you a grey box to
+**copy and paste**, and tells you what you **should see**. If you do not see it, read
+**If not** and stop there. Write down the exact message on the screen and send it to Adel.
 
----
+**How to copy a grey box:** select the text inside it with the mouse, press **Ctrl + C**,
+click where you want it, press **Ctrl + V**, then press **Enter**. Paste one box at a time.
 
-## Part A: the campus PC
+| Part | Where | About how long |
+|---|---|---|
+| A | The campus PC (Windows) | 1 hour, mostly waiting for downloads |
+| B | The Jetson | 30 minutes |
+| C | Optional: make speech faster on the campus PC | 20 minutes |
 
-### A1. Before anything
-- [ ] Confirm we are allowed to install programs on this PC. Some steps need an
-  administrator password.
-- [ ] Find the PC's IP address: in Command Prompt type `ipconfig` and write down the
-  **IPv4 Address** (looks like `10.x.x.x`). Everything below calls this `PC_IP`.
-
-### A2. Ollama and Qwen
-- [ ] Download the Windows installer from ollama.com and install it.
-- [ ] In Command Prompt: `ollama pull qwen3-vl:4b` (downloads about 3 GB).
-- [ ] Check it: `ollama list` shows `qwen3-vl:4b`.
-- [ ] Let the Jetson reach it. Ollama only answers this PC unless told otherwise:
-  1. Quit Ollama: right-click its icon near the clock, then Quit.
-  2. Start menu, type `environment variables`, open **Edit environment variables for your
-     account**.
-  3. **New...**: name `OLLAMA_HOST`, value `0.0.0.0`. OK.
-  4. Start Ollama again from the Start menu.
-- [ ] Check it: open `http://localhost:11434` in a browser. It says **Ollama is running**.
-
-### A3. Python and the speech server
-- [ ] Install Python 3.11 from python.org. On the first installer screen tick
-  **Add python.exe to PATH**.
-- [ ] Get our code: on GitHub, `adelahmad2005/apnvi-stage1`, **Code**, **Download ZIP**
-  (needs Adel's GitHub login). Unzip it, for example to `C:\apnvi`.
-- [ ] In Command Prompt:
-  ```
-  cd C:\apnvi\apnvi-stage1-main\campus_pc
-  pip install -r requirements.txt
-  ```
-- [ ] Graphics card libraries for the speech server. faster-whisper needs two NVIDIA
-  libraries (cuBLAS and cuDNN, for CUDA 12) that Windows does not have by default.
-  The faster-whisper page (github.com/SYSTRAN/faster-whisper, section "Download the
-  libraries from Purfview's repository") links an archive with them. Download it, unzip
-  it into a folder such as `C:\apnvi\cuda_libs`, and add that folder to **Path** in the
-  same environment variables window as A2.
-- [ ] Start it: `python speech_server.py`. The first start downloads the Whisper model.
-  Wait for **Ready. Listening on port 8090**.
-- [ ] If it fails with an error about cuBLAS, cuDNN or CUDA: stop it (Ctrl+C) and use the
-  processor instead, which is slower but needs nothing extra:
-  `python speech_server.py --device cpu`
-- [ ] Check it: open `http://localhost:8090/health` in a browser. It shows `"ok": true`.
-
-### A4. Let the Jetson in through the Windows firewall
-- [ ] Start menu, type `cmd`, right-click **Run as administrator**, then:
-  ```
-  netsh advfirewall firewall add rule name="APNVI Ollama" dir=in action=allow protocol=TCP localport=11434
-  netsh advfirewall firewall add rule name="APNVI speech" dir=in action=allow protocol=TCP localport=8090
-  ```
-  (If Windows pops up "Allow access?" for Ollama or Python, click Allow.)
-
-### A5. Try the finder on the test photos (on the PC itself)
-- [ ] In Command Prompt: `pip install numpy opencv-python`
-- [ ] Put Mo'ath's photos in a folder, for example `C:\apnvi\photos`, then:
-  ```
-  cd C:\apnvi\apnvi-stage1-main
-  python tools\try_finder.py C:\apnvi\photos
-  ```
-- [ ] Open `C:\apnvi\photos\results`. Check each red box by eye and note how many are
-  right. `results.csv` has the time each answer took.
-- [ ] If answers take more than about 3 seconds, try the smaller model:
-  `ollama pull qwen3-vl:2b`, then add `--model qwen3-vl:2b` to the command above.
-  If the 2B is used, add `model:=qwen3-vl:2b` to the Jetson command in B5 too.
-
-**Part A done when:** both checks in A2 and A3 pass, and the finder has run on the photos.
+**What you need before starting:** the campus PC with internet, an administrator password
+for it, Adel's GitHub login, the Jetson with its screen and keyboard, Mo'ath's photos, the
+microphone.
 
 ---
 
-## Part B: the Jetson
+## Part A — the campus PC
 
-### B1. Can the Jetson reach the PC? (This is Mo'ath's network check)
-- [ ] Jetson on campus wifi. In a terminal, with the real PC_IP:
-  ```
-  curl http://PC_IP:11434
-  curl http://PC_IP:8090/health
-  ```
-  The first prints **Ollama is running**. The second prints `"ok": true`.
-  If either hangs or says "refused": check A2 (OLLAMA_HOST), A4 (firewall), and that
-  both are on the same network.
+### A1. Open the Command Prompt
 
-### B2. Update and build the code
-- [ ] In a terminal:
-  ```
-  cd ~/apnvi_demo/src/apnvi-stage1 && git pull
-  sudo apt install -y alsa-utils espeak-ng
-  source /opt/ros/humble/setup.bash
-  cd ~/apnvi_demo && colcon build && source install/setup.bash
-  ```
+**Do:** click the Start button (bottom left), type `cmd`, and press Enter.
 
-### B3. The ESP32 (Mo'ath)
-- [ ] Open `esp32/apnvi_esp32/apnvi_esp32.ino` in the Arduino app, click **Verify**
-  (it must compile), then **Upload**.
-- [ ] Serial Monitor at 115200: distances keep coming as before. Press the button: `B1`.
-  Let go: `B0`.
+**You should see:** a black window with text like `C:\Users\...>` and a blinking cursor.
+This is the **Command Prompt**. Most grey boxes below get pasted here.
 
-### B4. The microphone
-- [ ] Plug it in, then `arecord -l`. Find its line, e.g. `card 2: ... device 0`.
-  The name to use is then `plughw:2,0` (card number, device number).
-- [ ] Quick test: `arecord -D plughw:2,0 -f S16_LE -r 16000 -c 1 -d 3 test.wav`, speak,
-  then `aplay test.wav`. You should hear yourself.
+### A2. Write down the PC's address
 
-### B5. Start everything and test
-- [ ] One command, with the real PC_IP and microphone name:
-  ```
-  ros2 launch apnvi_stage2 stage2.launch.py pc:=PC_IP mic:=plughw:2,0
-  ```
-- [ ] Open the Stage 2 view from a laptop on the same wifi: `http://JETSON_IP:8081`.
-  Stage 1's view is still on `http://JETSON_IP:8080`.
-- [ ] Typed test first, in a second terminal (after `source ~/apnvi_demo/install/setup.bash`):
-  ```
-  ros2 topic pub --once /voice/question std_msgs/String "{data: 'where is the exit'}"
-  ```
-  The view shows THINKING, then the picture with the red box, or the device says
-  "I can't see it, turn slowly and try again".
-- [ ] Button test: hold the button, ask "where is the exit", let go.
-- [ ] Safety check: turn the Jetson's wifi off and walk at a chair. Stage 1 still
-  beeps and warns. Ask a question: the device says "I can't reach the helper computer".
+**Do:** paste this into the Command Prompt.
 
-### If the red box is in the right place on the PC photos but tiny signs are missed live
-The live colour picture may be smaller than Mo'ath's photos. Tell Adel: raising the
-camera resolution is one setting in the Stage 1 launch file.
+```
+ipconfig
+```
+
+**You should see:** several lines. Find the line **IPv4 Address** and write down the number
+after it, for example `10.20.30.40`. This guide calls it **PC_IP**. You need it in Part B.
+
+**If not:** if there are several IPv4 lines, use the one under the section that says
+Ethernet or Wi-Fi and is not "Media disconnected".
+
+### A3. Install Ollama (the program that runs the AI)
+
+**Do:** open a web browser, go to **ollama.com/download**, click **Download for Windows**,
+open the downloaded file and click **Install**. Accept every question.
+
+**You should see:** a small llama icon near the clock (bottom right). You may need to click
+the little arrow ^ to see it.
+
+### A4. Download the AI model
+
+**Do:** go back to the Command Prompt and paste:
+
+```
+ollama pull qwen3-vl:4b
+```
+
+**You should see:** a progress bar. It downloads about 3 GB. At the end it says
+**success**.
+
+**If not:** if it says `'ollama' is not recognized`, close the Command Prompt, open a new
+one (step A1), and try again.
+
+### A5. Let the Jetson talk to Ollama
+
+Ollama only answers this PC unless we tell it otherwise.
+
+**Do:**
+1. Right-click the llama icon near the clock and click **Quit Ollama**.
+2. Click Start, type `environment variables`, and click **Edit environment variables for
+   your account**.
+3. In the top half, click **New...**
+4. Variable name: `OLLAMA_HOST`   Variable value: `0.0.0.0`   Click **OK**, then **OK**.
+5. Click Start, type `Ollama`, and open it again.
+
+**You should see:** the llama icon is back near the clock.
+
+### A6. Check Ollama works
+
+**Do:** in the web browser, go to this address:
+
+```
+http://localhost:11434
+```
+
+**You should see:** a page that only says **Ollama is running**.
+
+**If not:** wait 30 seconds and refresh. If it still fails, repeat A5.
+
+### A7. Install Python
+
+**Do:** in the browser go to **python.org/downloads/windows**, click the newest
+**Python 3.11** release, and download **Windows installer (64-bit)**. Open it.
+**Important: on the first screen tick the box "Add python.exe to PATH"**, then click
+**Install Now**.
+
+**You should see:** "Setup was successful". Click Close.
+
+### A8. Download our code
+
+**Do:**
+1. In the browser go to **github.com/adelahmad2005/apnvi-stage1** and log in with
+   Adel's GitHub account.
+2. Click the green **Code** button, then **Download ZIP**.
+3. Make a folder called `apnvi` directly on the C: drive (open **This PC**, **Local Disk
+   (C:)**, right-click, **New**, **Folder**).
+4. Right-click the downloaded ZIP, click **Extract All...**, type `C:\apnvi`, click
+   **Extract**.
+
+**You should see:** a folder `C:\apnvi\apnvi-stage1-main` with folders like `campus_pc`
+and `tools` inside.
+
+**Before leaving the PC:** log out of GitHub in the browser.
+
+### A9. Install what the speech program needs
+
+**Do:** close the Command Prompt, open a new one (step A1), and paste these two lines,
+one at a time:
+
+```
+cd /d C:\apnvi\apnvi-stage1-main\campus_pc
+```
+
+```
+python -m pip install -r requirements.txt
+```
+
+**You should see:** many lines scroll past, ending with **Successfully installed ...**
+
+**If not:** if it says `'python' is not recognized`, Python was installed without the
+"Add python.exe to PATH" tick. Run the Python installer again, choose **Modify**, and make
+sure that option is on.
+
+### A10. Start the speech program
+
+**Do:** in the same Command Prompt, paste:
+
+```
+python speech_server.py --device cpu
+```
+
+**You should see:** "Loading Whisper..." and then, after it downloads its model the first
+time, **Ready. Listening on port 8090**.
+
+**Leave this window open.** Closing it stops the speech program. Open a new Command Prompt
+for the next steps.
+
+*(This uses the processor. Part C makes it faster with the graphics card, later.)*
+
+### A11. Check the speech program works
+
+**Do:** in the browser go to:
+
+```
+http://localhost:8090/health
+```
+
+**You should see:** a line containing `"ok": true`.
+
+### A12. Open the firewall for the Jetson
+
+**Do:** click Start, type `cmd`, **right-click** Command Prompt and choose **Run as
+administrator**. Enter the administrator password. Then paste these two lines, one at a
+time:
+
+```
+netsh advfirewall firewall add rule name="APNVI Ollama" dir=in action=allow protocol=TCP localport=11434
+```
+
+```
+netsh advfirewall firewall add rule name="APNVI speech" dir=in action=allow protocol=TCP localport=8090
+```
+
+**You should see:** **Ok.** after each line.
+
+**If not:** "The requested operation requires elevation" means this window is not running
+as administrator. Close it and open it again with right-click, Run as administrator.
+
+### A13. Try the AI on the test photos
+
+**Do:**
+1. Copy Mo'ath's photos into a new folder `C:\apnvi\photos`.
+2. Open a new Command Prompt (step A1) and paste, one at a time:
+
+```
+python -m pip install numpy opencv-python
+```
+
+```
+cd /d C:\apnvi\apnvi-stage1-main
+```
+
+```
+python tools\try_finder.py C:\apnvi\photos
+```
+
+**You should see:** one line per photo, with `found=yes` or `found=no` and the seconds it
+took. The first photo is slow because the AI is loading.
+
+**Then:** open the folder `C:\apnvi\photos\results`. Each photo has a red box drawn where
+the AI thinks the thing is. Count how many boxes are on the right thing and write it down.
+
+**If answers take more than about 3 seconds each:** try the smaller AI. Paste these, one
+at a time, and remember to tell Adel you used it:
+
+```
+ollama pull qwen3-vl:2b
+```
+
+```
+python tools\try_finder.py C:\apnvi\photos --model qwen3-vl:2b
+```
+
+**Part A is done.** Keep the speech window from A10 open.
+
+---
+
+## Part B — the Jetson
+
+### B1. Open a Terminal
+
+**Do:** on the Jetson press **Ctrl + Alt + T**.
+
+**You should see:** a window with text ending in `$`. This is the **Terminal**. Paste here
+with **Ctrl + Shift + V** (not Ctrl + V).
+
+Make sure the Jetson is on the campus wifi (wifi icon, top right).
+
+### B2. Check the Jetson can reach the PC
+
+**Do:** paste these two lines, one at a time. **Replace PC_IP with the number from A2**
+before pressing Enter.
+
+```
+curl http://PC_IP:11434
+```
+
+```
+curl http://PC_IP:8090/health
+```
+
+**You should see:** the first prints **Ollama is running**. The second prints a line with
+`"ok": true`.
+
+**If not:** if it waits for a long time or says "refused": check A5 and A12 on the PC, and
+that the speech window from A10 is still open.
+
+### B3. Get the new code and build it
+
+**Do:** paste these lines, one at a time. Enter the Jetson's password if asked (nothing
+shows while you type it, that is normal).
+
+```
+cd ~/apnvi_demo/src/apnvi-stage1 && git pull
+```
+
+```
+sudo apt install -y alsa-utils espeak-ng
+```
+
+```
+source /opt/ros/humble/setup.bash && cd ~/apnvi_demo && colcon build && source install/setup.bash
+```
+
+**You should see:** at the end of the last one, **Summary: 2 packages finished**.
+
+**If not:** copy the red error lines and send them to Adel.
+
+### B4. Put the new program on the ESP32 (Mo'ath)
+
+**Do:**
+1. On the laptop with the Arduino app, download the code: go to
+   **github.com/adelahmad2005/apnvi-stage1**, log in, click **Code**, then **Download ZIP**,
+   and extract it. Open the file `esp32\apnvi_esp32\apnvi_esp32.ino` in the Arduino app.
+2. Click **Verify** (the tick). Wait for **Done compiling**.
+3. Plug in the ESP32, click **Upload** (the arrow). Wait for **Done uploading**.
+4. Open **Tools**, **Serial Monitor**, and set the speed to **115200**.
+
+**You should see:** numbers like `1.23` scrolling, as before. Press the button: a line
+**B1** appears. Let go: **B0** appears.
+
+5. Close the Serial Monitor and plug the ESP32 back into the Jetson.
+
+### B5. Find the microphone's name
+
+**Do:** plug the microphone into the Jetson and paste:
+
+```
+arecord -l
+```
+
+**You should see:** a list of cards. Find the microphone's line, for example
+`card 2: Device [USB Audio Device], device 0`. Its name is **plughw:** then the card
+number, a comma, and the device number. In this example: `plughw:2,0`. This guide calls it
+**MIC**.
+
+### B6. Test the microphone
+
+**Do:** paste this (replace MIC), and speak for 3 seconds:
+
+```
+arecord -D MIC -f S16_LE -r 16000 -c 1 -d 3 test.wav && aplay test.wav
+```
+
+**You should see:** after 3 seconds, you hear your own voice played back.
+
+### B7. Start everything
+
+**Do:** paste this, replacing **PC_IP** and **MIC**:
+
+```
+ros2 launch apnvi_stage2 stage2.launch.py pc:=PC_IP mic:=MIC
+```
+
+**You should see:** many lines scroll, including **Ready. Qwen at http://...**
+**Leave this window open.**
+
+(If you used the smaller AI in A13, add ` model:=qwen3-vl:2b` at the end.)
+
+### B8. Open the screens
+
+**Do:** on a laptop on the same wifi, open the browser. You need the Jetson's address:
+open a new Terminal on the Jetson (Ctrl + Alt + T) and paste `hostname -I`. Use the first
+number. Then go to:
+
+```
+http://JETSON_IP:8081
+```
+
+**You should see:** the live colour camera and a green **READY** box underneath.
+(Stage 1's screen is still at port 8080.)
+
+### B9. Ask by typing (first test)
+
+**Do:** in the second Jetson Terminal, paste these, one at a time:
+
+```
+source ~/apnvi_demo/install/setup.bash
+```
+
+```
+ros2 topic pub --once /voice/question std_msgs/String "{data: 'where is the exit'}"
+```
+
+**You should see:** on the screen: THINKING, then the picture with a red box around the
+exit, or the device says **"I can't see it, turn slowly and try again"**.
+
+### B10. Ask with the button (real test)
+
+**Do:** point the camera at something on the list, **hold** the button, say "where is the
+exit", **let go**.
+
+**You should see:** LISTENING while you hold, THINKING after you let go, then the red box
+(silent) or the "turn slowly" sentence.
+
+### B11. Safety check
+
+**Do:** turn the Jetson's wifi off. Walk the device toward a chair.
+
+**You should see:** Stage 1 still beeps faster as it gets closer. Ask a question with the
+button: the device says **"I can't reach the helper computer"**. Turn the wifi back on.
+
+**All done.** Write down for each target: did the box land on it, and how many seconds it
+took (shown on the screen).
+
+---
+
+## Part C — optional: faster speech using the graphics card
+
+Only do this after everything above works.
+
+**Do:**
+1. Go to **github.com/SYSTRAN/faster-whisper** and find the section **"Download the
+   libraries from Purfview's repository"**. Follow its link and download the archive it
+   names for Windows.
+2. Extract it into a new folder `C:\apnvi\cuda_libs`.
+3. Click Start, type `environment variables`, open **Edit environment variables for your
+   account**, click **Path** in the top half, **Edit...**, **New**, type
+   `C:\apnvi\cuda_libs`, **OK**, **OK**.
+4. Close the speech window from A10. Open a new Command Prompt and paste, one at a time:
+
+```
+cd /d C:\apnvi\apnvi-stage1-main\campus_pc
+```
+
+```
+python speech_server.py
+```
+
+**You should see:** **Ready. Listening on port 8090**, with "on cuda" in the line above it.
+
+**If not:** any error mentioning cuBLAS, cuDNN or CUDA means it did not work. Go back to
+`python speech_server.py --device cpu`, which works fine, only slower.
