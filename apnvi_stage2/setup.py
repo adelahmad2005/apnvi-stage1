@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'stage2_node = apnvi_stage2.stage2_node:main',
         ],
     },
 )
