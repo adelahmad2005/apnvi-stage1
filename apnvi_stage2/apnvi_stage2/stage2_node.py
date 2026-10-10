@@ -15,8 +15,11 @@ Listens: /button/pressed   Bool    from esp32_reader (True = held, False = let g
 Sends:   /target/result    String  JSON: question, found, box [left, top, right, bottom],
                                     label, seconds, said, problem
          /target/image     Image   the picture the question was asked about, with the box
+         /stage2/status    String  listening / thinking / ready, for the live view
 
 Settings (--ros-args -p name:=value):
+  pc            the campus PC's IP address. When set, ollama_url and speech_url are built
+                from it (ports 11434 and 8090), so this is the only one to change
   ollama_url    where Qwen runs, default http://localhost:11434
   speech_url    where the speech server runs, default http://localhost:8090
   model         default qwen3-vl:4b
@@ -34,11 +37,11 @@ import tempfile
 import threading
 import time
 
+from apnvi_stage1.hazard_node import NEWEST_PICTURE
 import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
 
@@ -70,6 +73,11 @@ def bgr_to_image(picture, stamp=None):
     if stamp is not None:
         msg.header.stamp = stamp
     return msg
+
+
+def urls_for_pc(pc):
+    """Build the Qwen and speech server addresses from the campus PC's IP address."""
+    return f'http://{pc}:11434', f'http://{pc}:8090'
 
 
 def result_json(outcome):
@@ -131,6 +139,7 @@ class Stage2Node(Node):
 
     def __init__(self):
         super().__init__('stage2_node')
+        self.declare_parameter('pc', '')
         self.declare_parameter('ollama_url', OLLAMA_URL)
         self.declare_parameter('speech_url', SPEECH_URL)
         self.declare_parameter('model', MODEL)
@@ -140,6 +149,9 @@ class Stage2Node(Node):
         self.ollama_url = self.get_parameter('ollama_url').value
         self.speech_url = self.get_parameter('speech_url').value
         self.model = self.get_parameter('model').value
+        pc = str(self.get_parameter('pc').value).strip()
+        if pc:
+            self.ollama_url, self.speech_url = urls_for_pc(pc)
         self.voice = bool(self.get_parameter('voice').value)
         self.espeak = shutil.which('espeak-ng')
         if self.voice and not self.espeak:
@@ -155,8 +167,9 @@ class Stage2Node(Node):
 
         self.result_pub = self.create_publisher(String, '/target/result', 10)
         self.image_pub = self.create_publisher(Image, '/target/image', 1)
+        self.status_pub = self.create_publisher(String, '/stage2/status', 10)
         self.create_subscription(Image, self.get_parameter('color_topic').value,
-                                 self.on_picture, qos_profile_sensor_data)
+                                 self.on_picture, NEWEST_PICTURE)
         self.create_subscription(Bool, '/button/pressed', self.on_button, 10)
         self.create_subscription(String, '/voice/question', self.on_typed, 10)
         self.create_timer(0.5, self.check_long_hold)
@@ -188,6 +201,7 @@ class Stage2Node(Node):
                 self.get_logger().error(f'Cannot start the microphone: {problem}')
                 return
             self.recording = True
+            self.status_pub.publish(String(data='listening'))
             self.get_logger().info('Listening...')
         elif not msg.data and self.recording:
             self.finish_recording()
@@ -204,9 +218,11 @@ class Stage2Node(Node):
         wav, held = self.recorder.stop()
         image = self.latest_bgr()               # the picture at the moment of letting go
         if held < MIN_HOLD_S:
+            self.status_pub.publish(String(data='ready'))
             self.get_logger().info('Button tapped too briefly: ignored')
             return
         if wav is None:
+            self.status_pub.publish(String(data='ready'))
             self.get_logger().error('Nothing was recorded: is the microphone plugged in?')
             return
         self.start_answer(lambda: answer_recording(
@@ -223,6 +239,7 @@ class Stage2Node(Node):
     def start_answer(self, work):
         """Run the answer in a background thread so nothing else waits for it."""
         self.busy.acquire()
+        self.status_pub.publish(String(data='thinking'))
 
         def run():
             try:
@@ -231,6 +248,7 @@ class Stage2Node(Node):
             except Exception as problem:        # never let one question kill the node
                 self.get_logger().error(f'Answering failed: {problem}')
             finally:
+                self.status_pub.publish(String(data='ready'))
                 self.busy.release()
 
         threading.Thread(target=run, daemon=True).start()

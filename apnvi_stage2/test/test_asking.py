@@ -148,3 +148,10 @@ def test_recorder_gets_the_sound_after_letting_go(tmp_path, monkeypatch):
     wav, held = recorder.stop()
     assert wav is not None and wav.endswith(b'sound') and held >= 0.4
     assert not os.path.exists(path)                 # the temporary file is cleaned up
+
+
+# ---- Campus PC setting ----
+
+def test_urls_for_pc():
+    from apnvi_stage2.stage2_node import urls_for_pc
+    assert urls_for_pc('10.1.2.3') == ('http://10.1.2.3:11434', 'http://10.1.2.3:8090')
