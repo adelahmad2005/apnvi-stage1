@@ -1,6 +1,6 @@
 """Tests for the no-ROS parts of esp32_reader.py and output_node.py."""
 
-from apnvi_stage1.esp32_reader import fake_distance, parse_line
+from apnvi_stage1.esp32_reader import fake_distance, parse_button, parse_line
 from apnvi_stage1.output_node import bar_value, beep_gap, message_for
 
 
@@ -11,6 +11,13 @@ def test_parse_numbers_and_skip_junk():
     assert parse_line('-1') == -1.0
     assert parse_line('') is None
     assert parse_line('hello') is None
+
+
+def test_button_lines():
+    assert parse_button('B1\r') is True
+    assert parse_button('B0') is False
+    assert parse_button('1.23') is None
+    assert parse_line('B1') is None                 # never mistaken for a distance
 
 
 def test_test_mode_goes_3m_to_03m_and_back():

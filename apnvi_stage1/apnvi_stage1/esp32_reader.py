@@ -1,10 +1,13 @@
 """
-esp32_reader: reads the ultrasonic distance from the ESP32 over USB.
+esp32_reader: reads the ultrasonic distance and the Stage 2 button from the ESP32 over USB.
 
 The ESP32 sends one number per line, in metres with 2 decimals (e.g. 1.23), or -1 when
 nothing is in range, about 10 times a second at 115200 baud.
+Stage 2 (hold to talk, decided 2026-10-08): it also sends "B1" when the button is pressed
+and "B0" when it is let go.
 
 Sends:  /ultrasonic/distance  Float32  metres, -1 = nothing in range
+        /button/pressed       Bool     True = button held down, False = let go
 
 Settings (--ros-args -p name:=value):
   port       USB port of the ESP32, default /dev/ttyUSB0
@@ -16,7 +19,7 @@ import time
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Float32
+from std_msgs.msg import Bool, Float32
 
 BAUD = 115200
 TEST_FAR_M, TEST_NEAR_M = 3.0, 0.3      # test mode range
@@ -30,6 +33,11 @@ def parse_line(line):
     except ValueError:
         return None
     return -1.0 if value < 0 else value
+
+
+def parse_button(line):
+    """Turn one line from the ESP32 into True (pressed), False (let go), or None."""
+    return {'B1': True, 'B0': False}.get(line.strip())
 
 
 def fake_distance(seconds):
@@ -51,6 +59,7 @@ class Esp32Reader(Node):
         self.test_mode = bool(self.get_parameter('test_mode').value)
 
         self.pub = self.create_publisher(Float32, '/ultrasonic/distance', 10)
+        self.button_pub = self.create_publisher(Bool, '/button/pressed', 10)
         self.serial = None
         self.buffer = b''
         self.start = time.monotonic()
@@ -82,7 +91,7 @@ class Esp32Reader(Node):
                                    throttle_duration_sec=10.0)
 
     def read_serial(self):
-        """Read whatever the ESP32 has sent, and send each complete number on."""
+        """Read whatever the ESP32 has sent, and send each distance or button change on."""
         if self.serial is None:
             self.open_port()
             return
@@ -94,7 +103,12 @@ class Esp32Reader(Node):
             return
         *lines, self.buffer = self.buffer.split(b'\n')   # keep any half line for next time
         for line in lines:
-            value = parse_line(line.decode('ascii', errors='ignore'))
+            text = line.decode('ascii', errors='ignore')
+            pressed = parse_button(text)
+            if pressed is not None:
+                self.button_pub.publish(Bool(data=pressed))
+                continue
+            value = parse_line(text)
             if value is not None:               # skip anything that is not a number
                 self.pub.publish(Float32(data=value))
 
