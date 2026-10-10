@@ -8,6 +8,7 @@ On a laptop with no hardware (typed questions only, Stage 1 in test mode):
 Options (Stage 1's options all work here too, see stage1.launch.py):
   pc:=10.1.2.3          the campus PC's IP address (Qwen on 11434, speech on 8090)
   mic:=plughw:2,0       the microphone, as listed by "arecord -l" (default: 'default')
+  model:=qwen3-vl:2b    use the smaller model (default qwen3-vl:4b)
   answer_voice:=false   do not speak Stage 2's sentences (on by default)
   stage2_view:=false    do not start the Stage 2 browser view (port 8081)
 Type a question instead of speaking:
@@ -28,6 +29,7 @@ STAGE1_OPTIONS = ['camera', 'test_mode', 'port', 'rviz', 'view', 'voice', 'camer
 def generate_launch_description():
     pc = LaunchConfiguration('pc')
     mic = LaunchConfiguration('mic')
+    model = LaunchConfiguration('model')
     answer_voice = LaunchConfiguration('answer_voice')
     stage2_view = LaunchConfiguration('stage2_view')
     color_topic = LaunchConfiguration('color_topic')
@@ -41,6 +43,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('pc', default_value=''),
         DeclareLaunchArgument('mic', default_value='default'),
+        DeclareLaunchArgument('model', default_value='qwen3-vl:4b'),
         DeclareLaunchArgument('answer_voice', default_value='true'),
         DeclareLaunchArgument('stage2_view', default_value='true'),
         DeclareLaunchArgument('color_topic', default_value='/camera/camera/color/image_raw'),
@@ -55,7 +58,7 @@ def generate_launch_description():
 
         stage1,
         Node(package='apnvi_stage2', executable='stage2_node', output='screen',
-             parameters=[{'pc': pc, 'mic': mic, 'voice': answer_voice,
+             parameters=[{'pc': pc, 'mic': mic, 'model': model, 'voice': answer_voice,
                           'color_topic': color_topic}]),
         Node(package='apnvi_stage2', executable='stage2_view', output='screen',
              parameters=[{'color_topic': color_topic}],
